@@ -26,25 +26,36 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Qt
-        uses: jurplel/install-qt-action@v4
-        with:
-          version: '6.5.10'
-          host: windows
-          target: desktop
-          arch: win64_msvc2019_64
-          modules: qtserialport
-          cache: true
+      - name: Install Qt tools
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install aqtinstall
+
+      - name: Install Qt 6.5.9
+        shell: pwsh
+        run: |
+          python -m aqt install-qt windows desktop 6.5.9 win64_msvc2019_64 --outputdir "$env:GITHUB_WORKSPACE\Qt" --modules qtserialport
 
       - name: Configure MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
 
+      - name: Add Qt to PATH
+        shell: pwsh
+        run: |
+          "$env:GITHUB_WORKSPACE\Qt\6.5.9\msvc2019_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify Qt installation
+        shell: pwsh
+        run: |
+          qmake --version
+
       - name: Build
         shell: cmd
         run: |
-          mkdir build
+          if not exist build mkdir build
           cd build
-          qmake ../phoenix.pro CONFIG+=release
+          qmake ..\phoenix.pro CONFIG+=release
           nmake
 
       - name: Package artifact
@@ -53,11 +64,12 @@ jobs:
           if (!(Test-Path build\release64\Fritzing.exe)) { throw 'Fritzing.exe not found in build\release64' }
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item build\release64\Fritzing.exe dist\fritzing.exe
-          if (Test-Path help) { Copy-Item help dist\help -Recurse -Force }
-          if (Test-Path resources) { Copy-Item resources dist\resources -Recurse -Force }
-          if (Test-Path sketches) { Copy-Item sketches dist\sketches -Recurse -Force }
-          if (Test-Path translations) { Copy-Item translations dist\translations -Recurse -Force }
-          if (Test-Path pri) { Copy-Item pri dist\pri -Recurse -Force }
+          $assets = @('help','resources','sketches','translations','pri')
+          foreach ($asset in $assets) {
+            if (Test-Path $asset) {
+              Copy-Item $asset (Join-Path dist $asset) -Recurse -Force
+            }
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
