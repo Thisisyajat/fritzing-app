@@ -2,10 +2,10 @@ name: Build Fritzing for Windows
 
 on:
   push:
-    branches: [ "main", "master", "develop" ]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: [ "main", "master", "develop" ]
-  workflow_dispatch: # Allows manual triggering from the GitHub UI
+    branches: [ "main", "master" ]
+  workflow_dispatch:
 
 jobs:
   build-windows:
@@ -19,15 +19,14 @@ jobs:
         with:
           path: fritzing-app
 
-      # 2. Checkout Fritzing parts (required by the app to run/build properly)
-      # Fritzing expects the 'fritzing-parts' folder to be at the same directory level as 'fritzing-app'
+      # 2. Checkout Fritzing parts (Required sibling directory)
       - name: Checkout fritzing-parts
         uses: actions/checkout@v4
         with:
           repository: fritzing/fritzing-parts
           path: fritzing-parts
 
-      # 3. Install Qt (Fritzing is transitioning to Qt6, but 5.15 is still widely used. Adjust version if needed)
+      # 3. Install Qt with Caching Enabled
       - name: Install Qt
         uses: jurplel/install-qt-action@v3
         with:
@@ -35,39 +34,49 @@ jobs:
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2019_64'
-          setup-python: 'false' # Skips python setup to save time if not needed
+          setup-python: 'false'
+          cached: 'true'
 
-      # 4. Install required C++ dependencies using the pre-installed vcpkg
-      - name: Install Dependencies (Boost & libgit2)
+      # 4. Set up MSVC Developer Command Prompt (Provides 'nmake')
+      - name: Set up MSVC Developer Command Prompt
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # 5. Install required C++ dependencies using vcpkg
+      - name: Install Dependencies via vcpkg
         run: |
-          vcpkg install boost-system:x64-windows boost-filesystem:x64-windows libgit2:x64-windows zlib:x64-windows
-          vcpkg integrate install
+          vcpkg install boost-system:x64-windows boost-filesystem:x64-windows libgit2:x64-windows zlib:x64-windows quazip:x64-windows clipper:x64-windows
         shell: pwsh
 
-      # 5. Configure the build using CMake
-      - name: Configure CMake
+      # 6. Link dependencies to look like sibling folders so phoenix.pro can find them
+      - name: Link Sibling Dependencies
+        working-directory: ${{ github.workspace }}
+        run: |
+          $vcpkg_root = "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows"
+          # Create symbolic links so Fritzing's rigid internal paths map to vcpkg
+          New-Item -ItemType SymbolicLink -Path "libgit2" -Target "$vcpkg_root"
+          New-Item -ItemType SymbolicLink -Path "boost" -Target "$vcpkg_root/include"
+          New-Item -ItemType SymbolicLink -Path "quazip" -Target "$vcpkg_root"
+          New-Item -ItemType SymbolicLink -Path "clipper" -Target "$vcpkg_root"
+        shell: pwsh
+
+      # 7. Configure the build using QMake
+      - name: Run QMake
         working-directory: ${{ github.workspace }}/fritzing-app
         run: |
-          mkdir build
-          cd build
-          # Pass vcpkg toolchain for dependencies and locate Qt
-          cmake .. `
-            -G "Visual Studio 17 2022" -A x64 `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
-            -DCMAKE_PREFIX_PATH="$env:Qt6_DIR"
+          & "${{ env.Qt6_DIR }}/bin/qmake.exe" phoenix.pro -r CONFIG+=release
         shell: pwsh
 
-      # 6. Build the application
-      - name: Build Fritzing
-        working-directory: ${{ github.workspace }}/fritzing-app/build
-        run: cmake --build . --config Release --parallel 4
+      # 8. Build the application using NMake
+      - name: Build Fritzing via NMake
+        working-directory: ${{ github.workspace }}/fritzing-app
+        run: nmake
 
-      # 7. Upload the compiled executable as a workflow artifact
+      # 9. Upload the compiled executable as a workflow artifact
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Fritzing-Windows-Release
           path: |
-            fritzing-app/build/Release/*.exe
-            fritzing-app/build/Release/*.dll
+            fritzing-app/release/*.exe
+            fritzing-app/release/*.dll
           retention-days: 7
