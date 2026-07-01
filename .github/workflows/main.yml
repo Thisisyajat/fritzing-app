@@ -1,0 +1,67 @@
+name: Build Fritzing for Windows
+
+on:
+  push:
+    branches:
+      - develop
+      - master
+  pull_request:
+    branches:
+      - develop
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.5.10'
+          host: windows
+          target: desktop
+          arch: win64_msvc2019_64
+          modules: qtserialport
+          cache: true
+
+      - name: Configure MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Build
+        shell: cmd
+        run: |
+          mkdir build
+          cd build
+          qmake ../phoenix.pro CONFIG+=release
+          nmake
+
+      - name: Package artifact
+        shell: pwsh
+        run: |
+          if (!(Test-Path build\release64\Fritzing.exe)) { throw 'Fritzing.exe not found in build\release64' }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build\release64\Fritzing.exe dist\fritzing.exe
+          if (Test-Path help) { Copy-Item help dist\help -Recurse -Force }
+          if (Test-Path resources) { Copy-Item resources dist\resources -Recurse -Force }
+          if (Test-Path sketches) { Copy-Item sketches dist\sketches -Recurse -Force }
+          if (Test-Path translations) { Copy-Item translations dist\translations -Recurse -Force }
+          if (Test-Path pri) { Copy-Item pri dist\pri -Recurse -Force }
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fritzing-windows
+          path: dist
+          if-no-files-found: error
