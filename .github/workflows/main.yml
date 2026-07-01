@@ -2,78 +2,72 @@ name: Build Fritzing for Windows
 
 on:
   push:
-    branches:
-      - develop
-      - master
+    branches: [ "main", "master", "develop" ]
   pull_request:
-    branches:
-      - develop
-      - master
-  workflow_dispatch:
+    branches: [ "main", "master", "develop" ]
+  workflow_dispatch: # Allows manual triggering from the GitHub UI
 
 jobs:
   build-windows:
-    runs-on: windows-2022
+    name: Windows MSVC Build
+    runs-on: windows-latest
 
     steps:
-      - name: Checkout
+      # 1. Checkout the main Fritzing application code
+      - name: Checkout fritzing-app
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          path: fritzing-app
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      # 2. Checkout Fritzing parts (required by the app to run/build properly)
+      # Fritzing expects the 'fritzing-parts' folder to be at the same directory level as 'fritzing-app'
+      - name: Checkout fritzing-parts
+        uses: actions/checkout@v4
         with:
-          python-version: '3.11'
+          repository: fritzing/fritzing-parts
+          path: fritzing-parts
 
-      - name: Install Qt tools
+      # 3. Install Qt (Fritzing is transitioning to Qt6, but 5.15 is still widely used. Adjust version if needed)
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.5.3' 
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2019_64'
+          setup-python: 'false' # Skips python setup to save time if not needed
+
+      # 4. Install required C++ dependencies using the pre-installed vcpkg
+      - name: Install Dependencies (Boost & libgit2)
+        run: |
+          vcpkg install boost-system:x64-windows boost-filesystem:x64-windows libgit2:x64-windows zlib:x64-windows
+          vcpkg integrate install
         shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install aqtinstall
 
-      - name: Install Qt 6.5.9
-        shell: pwsh
+      # 5. Configure the build using CMake
+      - name: Configure CMake
+        working-directory: ${{ github.workspace }}/fritzing-app
         run: |
-          python -m aqt install-qt windows desktop 6.5.9 win64_msvc2019_64 --outputdir "$env:GITHUB_WORKSPACE\Qt" --modules qtserialport
-
-      - name: Configure MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Add Qt to PATH
-        shell: pwsh
-        run: |
-          "$env:GITHUB_WORKSPACE\Qt\6.5.9\msvc2019_64\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Verify Qt installation
-        shell: pwsh
-        run: |
-          qmake --version
-
-      - name: Build
-        shell: cmd
-        run: |
-          if not exist build mkdir build
+          mkdir build
           cd build
-          qmake ..\phoenix.pro CONFIG+=release
-          nmake
-
-      - name: Package artifact
+          # Pass vcpkg toolchain for dependencies and locate Qt
+          cmake .. `
+            -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_PREFIX_PATH="$env:Qt6_DIR"
         shell: pwsh
-        run: |
-          if (!(Test-Path build\release64\Fritzing.exe)) { throw 'Fritzing.exe not found in build\release64' }
-          New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item build\release64\Fritzing.exe dist\fritzing.exe
-          $assets = @('help','resources','sketches','translations','pri')
-          foreach ($asset in $assets) {
-            if (Test-Path $asset) {
-              Copy-Item $asset (Join-Path dist $asset) -Recurse -Force
-            }
-          }
 
-      - name: Upload artifact
+      # 6. Build the application
+      - name: Build Fritzing
+        working-directory: ${{ github.workspace }}/fritzing-app/build
+        run: cmake --build . --config Release --parallel 4
+
+      # 7. Upload the compiled executable as a workflow artifact
+      - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fritzing-windows
-          path: dist
-          if-no-files-found: error
+          name: Fritzing-Windows-Release
+          path: |
+            fritzing-app/build/Release/*.exe
+            fritzing-app/build/Release/*.dll
+          retention-days: 7
